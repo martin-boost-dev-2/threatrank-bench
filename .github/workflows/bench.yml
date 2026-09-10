@@ -12,12 +12,17 @@ on:
       sweep_target:
         description: "Which target runs the CVE sweep"
         default: "js--juice-shop--juice-shop"
+      sweep_only:
+        description: "Skip the three arms and only run the CVE sweep"
+        default: "false"
+      sweep_counts:
+        description: "CVE counts to sweep"
+        default: "10 25 50 100 200 400"
 
 env:
   CONTROL_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-trivy-sbom:68831d5
   VARIANT_A_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-threatrank:cd79f76
   TRIVY_CONVERTER_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-trivy:0269f97
-  TRIVY_IMAGE: aquasec/trivy:0.69.2
 
 jobs:
   images:
@@ -74,7 +79,6 @@ jobs:
         env:
           VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
         run: |
-          docker pull -q "$TRIVY_IMAGE"
           docker pull -q "$CONTROL_IMAGE"
           docker pull -q "$VARIANT_A_IMAGE"
           docker pull -q "$VARIANT_B_IMAGE"
@@ -86,7 +90,9 @@ jobs:
           TARGET: ${{ matrix.target }}
           REPEATS: ${{ inputs.repeats }}
           VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
-          RUN_SWEEP: ${{ matrix.target == inputs.sweep_target && '1' || '0' }}
+          RUN_SWEEP: ${{ (inputs.sweep_only == 'true' || matrix.target == inputs.sweep_target) && '1' || '0' }}
+          SWEEP_ONLY: ${{ inputs.sweep_only }}
+          SWEEP_COUNTS: ${{ inputs.sweep_counts }}
         run: |
           chmod +x scripts/bench.sh
           ./scripts/bench.sh > results-${{ matrix.target }}.csv

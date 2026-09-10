@@ -14,7 +14,8 @@ REPO_DIR=${REPO_DIR:?set REPO_DIR to the checkout under test}
 TARGET=${TARGET:?set TARGET to the repo name, for the report}
 REPEATS=${REPEATS:-3}
 
-TRIVY_IMAGE=${TRIVY_IMAGE:-aquasec/trivy:0.69.2}
+TRIVY_VERSION=${TRIVY_VERSION:-0.69.2}
+TRIVY_BIN=${TRIVY_BIN:-/usr/local/bin/trivy}
 CONTROL_IMAGE=${CONTROL_IMAGE:?}
 VARIANT_A_IMAGE=${VARIANT_A_IMAGE:?}
 VARIANT_B_IMAGE=${VARIANT_B_IMAGE:?}
@@ -50,18 +51,30 @@ repo_stats() {
 # The Trivy scan itself — the cost every arm shares, and the baseline that
 # reachability is a percentage *of*.
 # ---------------------------------------------------------------------------
+# The binary rather than the image: it is what the scanner module actually
+# downloads, and it keeps the benchmark off Docker Hub's anonymous pull limit,
+# which six parallel jobs exhaust.
+install_trivy() {
+    [ -x "$TRIVY_BIN" ] && return
+    curl -sfSL -o /tmp/trivy.gz \
+        "https://assets.build.boostsecurity.io/scanners/trivy/trivy-${TRIVY_VERSION}/linux/amd64/trivy.gz"
+    gunzip -f /tmp/trivy.gz
+    chmod +x /tmp/trivy
+    sudo mv /tmp/trivy "$TRIVY_BIN"
+}
+
 run_trivy() {
+    install_trivy
+
     local start stop
     start=$(now)
-    docker run --rm -v "$REPO_DIR:/repo" -v "$REPO_DIR:/out" -w /repo \
-        "$TRIVY_IMAGE" fs --format=json --output=/out/trivy-report.json \
-        --license-full --no-progress --scanners vuln \
-        --skip-version-check /repo >/dev/null 2>&1 || true
+    ( cd "$REPO_DIR" && "$TRIVY_BIN" fs --format=json --output=trivy-report.json \
+        --license-full --no-progress --scanners vuln --cache-dir=/tmp/trivy-cache \
+        --skip-version-check . >/dev/null 2>&1 ) || true
     stop=$(now)
 
-    docker run --rm -v "$REPO_DIR:/repo" -w /repo "$TRIVY_IMAGE" \
-        convert --quiet --format cyclonedx trivy-report.json \
-        > "$REPO_DIR/trivy-cyclonedx.json" 2>/dev/null || true
+    ( cd "$REPO_DIR" && "$TRIVY_BIN" convert --quiet --format cyclonedx \
+        trivy-report.json > trivy-cyclonedx.json 2>/dev/null ) || true
 
     local secs; secs=$(elapsed "$start" "$stop")
     say "  trivy scan: ${secs}s"
@@ -161,9 +174,11 @@ main() {
     repo_stats
     run_trivy
 
-    time_arm "control" "$CONTROL_IMAGE"
-    time_variant_a
-    time_arm "variantB" "$VARIANT_B_IMAGE" -e THREATRANK_BENCHMARK=1
+    if [ "${SWEEP_ONLY:-false}" != "true" ]; then
+        time_arm "control" "$CONTROL_IMAGE"
+        time_variant_a
+        time_arm "variantB" "$VARIANT_B_IMAGE" -e THREATRANK_BENCHMARK=1
+    fi
 
     if [ "${RUN_SWEEP:-0}" = "1" ]; then
         sweep
