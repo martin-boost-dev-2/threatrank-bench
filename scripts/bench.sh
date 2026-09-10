@@ -130,8 +130,10 @@ sweep() {
     for n in ${SWEEP_COUNTS:-10 25 50 100 250 500}; do
         python3 scripts/truncate_cves.py "$REPO_DIR/.trivy-full.json" \
             "$REPO_DIR/trivy-report.json" "$n"
-        local actual; actual=$(cve_count)
-        [ "$actual" -eq 0 ] && continue
+        local actual; actual=$(cve_count || echo 0)
+        if [ "${actual:-0}" -eq 0 ]; then
+            continue
+        fi
 
         local start stop secs
         start=$(now)
@@ -146,7 +148,9 @@ sweep() {
         row "$TARGET" "sweep" "$actual" "$secs" "${bench:-}"
 
         # Stop once the list is exhausted rather than re-timing the same set.
-        [ "$actual" -lt "$n" ] && break
+        if [ "$actual" -lt "$n" ]; then
+            break
+        fi
     done
 
     mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
@@ -161,7 +165,9 @@ main() {
     time_variant_a
     time_arm "variantB" "$VARIANT_B_IMAGE" -e THREATRANK_BENCHMARK=1
 
-    [ "${RUN_SWEEP:-0}" = "1" ] && sweep
+    if [ "${RUN_SWEEP:-0}" = "1" ]; then
+        sweep
+    fi
 
     say "== ${TARGET} done =="
 }
