@@ -1,0 +1,106 @@
+name: threatrank-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant_b_image:
+        description: "boost-scanner-trivy-sbom image with the timing hook"
+        required: true
+      repeats:
+        description: "Timed repetitions per arm"
+        default: "3"
+      sweep_target:
+        description: "Which target runs the CVE sweep"
+        default: "js--juice-shop--juice-shop"
+
+env:
+  CONTROL_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-trivy-sbom:68831d5
+  VARIANT_A_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-threatrank:cd79f76
+  TRIVY_CONVERTER_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-trivy:0269f97
+  TRIVY_IMAGE: aquasec/trivy:0.69.2
+
+jobs:
+  images:
+    name: image pull cost
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every scan pays this on a cold runner, so it belongs in the answer
+      # alongside the analysis time itself.
+      - name: Time a cold pull of each image
+        env:
+          VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
+        run: |
+          {
+            echo "| image | pull seconds | size |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for var in CONTROL_IMAGE VARIANT_A_IMAGE VARIANT_B_IMAGE TRIVY_CONVERTER_IMAGE; do
+            image=${!var}
+            start=$(date +%s.%N)
+            docker pull -q "$image" >/dev/null
+            stop=$(date +%s.%N)
+            secs=$(echo "$start $stop" | awk '{printf "%.2f", $2 - $1}')
+            size=$(docker image inspect "$image" --format '{{.Size}}' \
+                   | awk '{printf "%.0f MB", $1/1024/1024}')
+            echo "| \`${var}\` | ${secs} | ${size} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+  bench:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - go--syncthing--syncthing
+          - python--adeyosemanputra--pygoat
+          - js--juice-shop--juice-shop
+          - ruby--mastodon--mastodon
+          - java--dspace--dspace
+          - js--n8n-io--n8n
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the target
+        uses: actions/checkout@v4
+        with:
+          repository: meridian-holdings/${{ matrix.target }}
+          path: target
+
+      - name: Pull images
+        env:
+          VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
+        run: |
+          docker pull -q "$TRIVY_IMAGE"
+          docker pull -q "$CONTROL_IMAGE"
+          docker pull -q "$VARIANT_A_IMAGE"
+          docker pull -q "$VARIANT_B_IMAGE"
+          docker pull -q "$TRIVY_CONVERTER_IMAGE"
+
+      - name: Benchmark
+        env:
+          REPO_DIR: ${{ github.workspace }}/target
+          TARGET: ${{ matrix.target }}
+          REPEATS: ${{ inputs.repeats }}
+          VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
+          RUN_SWEEP: ${{ matrix.target == inputs.sweep_target && '1' || '0' }}
+        run: |
+          chmod +x scripts/bench.sh
+          ./scripts/bench.sh > results-${{ matrix.target }}.csv
+
+      - name: Summarize
+        if: always()
+        run: |
+          echo "### ${{ matrix.target }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat results-${{ matrix.target }}.csv >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.target }}
+          path: results-${{ matrix.target }}.csv
