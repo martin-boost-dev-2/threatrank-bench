@@ -169,6 +169,45 @@ sweep() {
     mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
 }
 
+# ---------------------------------------------------------------------------
+# Worker sweep: the two concurrency knobs, at a fixed CVE count.
+#
+# ONNX inference runs behind a single mutex-guarded session, so raising
+# ONNXWorkers should do nothing; snippet extraction is lock-free Go and may
+# scale until it runs out of cores. This measures both rather than assuming.
+# ---------------------------------------------------------------------------
+workers_sweep() {
+    local cap=${WORKER_SWEEP_CVES:-100}
+    cp "$REPO_DIR/trivy-report.json" "$REPO_DIR/.trivy-full.json"
+    python3 scripts/truncate_cves.py "$REPO_DIR/.trivy-full.json" \
+        "$REPO_DIR/trivy-report.json" "$cap"
+
+    local cves; cves=$(cve_count)
+    say "  worker sweep at ${cves} CVEs on $(nproc) cores"
+    row "$TARGET" "cores" "" "$(nproc)" "shape"
+
+    for combo in ${WORKER_COMBOS:-"16:8" "16:1" "16:4" "16:16" "4:8" "32:8" "64:16"}; do
+        local sw=${combo%%:*} ow=${combo##*:}
+
+        local start stop secs
+        start=$(now)
+        docker run --rm -i -v "$REPO_DIR:/scan" -w /scan \
+            -e THREATRANK_BENCHMARK=1 \
+            -e THREATRANK_SNIPPET_WORKERS="$sw" \
+            -e THREATRANK_ONNX_WORKERS="$ow" \
+            "$VARIANT_B_IMAGE" process \
+            < "$REPO_DIR/trivy-cyclonedx.json" > /dev/null 2>"$REPO_DIR/.arm.log" || true
+        stop=$(now)
+        secs=$(elapsed "$start" "$stop")
+
+        local bench; bench=$(grep -o 'seconds=[0-9.]*' "$REPO_DIR/.arm.log" | head -1 || true)
+        say "  snippet=${sw} onnx=${ow}: ${secs}s (${bench})"
+        row "$TARGET" "workers-s${sw}-o${ow}" "$cves" "$secs" "${bench:-}"
+    done
+
+    mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
+}
+
 main() {
     say "== ${TARGET} =="
     repo_stats
@@ -182,6 +221,10 @@ main() {
 
     if [ "${RUN_SWEEP:-0}" = "1" ]; then
         sweep
+    fi
+
+    if [ "${RUN_WORKER_SWEEP:-0}" = "1" ]; then
+        workers_sweep
     fi
 
     say "== ${TARGET} done =="

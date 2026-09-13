@@ -18,6 +18,12 @@ on:
       sweep_counts:
         description: "CVE counts to sweep"
         default: "10 25 50 100 200 400"
+      worker_sweep:
+        description: "Sweep the snippet/onnx worker knobs instead of the arms"
+        default: "false"
+      worker_sweep_cves:
+        description: "CVE count to hold fixed during the worker sweep"
+        default: "100"
 
 env:
   CONTROL_IMAGE: public.ecr.aws/boostsecurityio/boost-scanner-trivy-sbom:68831d5
@@ -90,9 +96,11 @@ jobs:
           TARGET: ${{ matrix.target }}
           REPEATS: ${{ inputs.repeats }}
           VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
-          RUN_SWEEP: ${{ (inputs.sweep_only == 'true' || matrix.target == inputs.sweep_target) && '1' || '0' }}
-          SWEEP_ONLY: ${{ inputs.sweep_only }}
+          RUN_SWEEP: ${{ (inputs.worker_sweep != 'true' && (inputs.sweep_only == 'true' || matrix.target == inputs.sweep_target)) && '1' || '0' }}
+          SWEEP_ONLY: ${{ (inputs.sweep_only == 'true' || inputs.worker_sweep == 'true') && 'true' || 'false' }}
           SWEEP_COUNTS: ${{ inputs.sweep_counts }}
+          RUN_WORKER_SWEEP: ${{ inputs.worker_sweep == 'true' && '1' || '0' }}
+          WORKER_SWEEP_CVES: ${{ inputs.worker_sweep_cves }}
         run: |
           chmod +x scripts/bench.sh
           ./scripts/bench.sh > results-${{ matrix.target }}.csv
