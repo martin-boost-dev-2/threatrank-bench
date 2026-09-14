@@ -208,6 +208,40 @@ workers_sweep() {
     mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
 }
 
+# ---------------------------------------------------------------------------
+# CPU sweep: is the machine already busy, or idle behind the inference mutex?
+#
+# ONNX Runtime is built with nil SessionOptions, so it uses its own default
+# intra-op threading. If that already saturates the cores, capping the container
+# to one CPU should slow it roughly by the core count; if inference really is
+# single-threaded behind the mutex, capping it should change almost nothing.
+# ---------------------------------------------------------------------------
+cpu_sweep() {
+    local cap=${WORKER_SWEEP_CVES:-100}
+    cp "$REPO_DIR/trivy-report.json" "$REPO_DIR/.trivy-full.json"
+    python3 scripts/truncate_cves.py "$REPO_DIR/.trivy-full.json" \
+        "$REPO_DIR/trivy-report.json" "$cap"
+
+    local cves; cves=$(cve_count)
+    say "  cpu sweep at ${cves} CVEs on $(nproc) cores"
+
+    for cpus in ${CPU_LIMITS:-1 2 4}; do
+        local start stop secs
+        start=$(now)
+        docker run --rm -i --cpus="$cpus" -v "$REPO_DIR:/scan" -w /scan \
+            -e THREATRANK_BENCHMARK=1 "$VARIANT_B_IMAGE" process \
+            < "$REPO_DIR/trivy-cyclonedx.json" > /dev/null 2>"$REPO_DIR/.arm.log" || true
+        stop=$(now)
+        secs=$(elapsed "$start" "$stop")
+
+        local bench; bench=$(grep -o 'seconds=[0-9.]*' "$REPO_DIR/.arm.log" | head -1 || true)
+        say "  cpus=${cpus}: ${secs}s (${bench})"
+        row "$TARGET" "cpus-${cpus}" "$cves" "$secs" "${bench:-}"
+    done
+
+    mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
+}
+
 main() {
     say "== ${TARGET} =="
     repo_stats
@@ -225,6 +259,10 @@ main() {
 
     if [ "${RUN_WORKER_SWEEP:-0}" = "1" ]; then
         workers_sweep
+    fi
+
+    if [ "${RUN_CPU_SWEEP:-0}" = "1" ]; then
+        cpu_sweep
     fi
 
     say "== ${TARGET} done =="
