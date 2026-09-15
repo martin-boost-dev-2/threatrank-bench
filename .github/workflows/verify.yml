@@ -37,6 +37,7 @@ jobs:
             label=${spec%%:*}; env=${spec#*:}
             ef=(); [ -n "$env" ] && ef=(-e "$env")
             mkdir -p "out-$label"
+            chmod 777 "out-$label"
             start=$(date +%s.%N)
             docker run --rm -v "$PWD/target:/scan" -v "$PWD/out-$label:/out" -w /tmp \
               -e THREATRANK_OUTPUT_DIR=/out "${ef[@]}" \
