@@ -255,12 +255,12 @@ pool_sweep() {
     local cves; cves=$(cve_count)
     say "  pool sweep at ${cves} CVEs on $(nproc) cores"
 
-    for n in ${POOL_SIZES:-0 2 4 8}; do
+    # Each entry is label:ENV=VALUE (empty env = the shipped configuration).
+    for spec in ${POOL_SPECS:-"baseline:" "intraop1:THREATRANK_ONNX_INTRA_OP=1" "intraop2:THREATRANK_ONNX_INTRA_OP=2" "pool2:THREATRANK_ONNX_SESSIONS=2" "pool4:THREATRANK_ONNX_SESSIONS=4"}; do
+        local label=${spec%%:*} env=${spec#*:}
         local envflag=()
-        local label="baseline"
-        if [ "$n" -gt 0 ]; then
-            envflag=(-e "THREATRANK_ONNX_SESSIONS=$n")
-            label="pool${n}"
+        if [ -n "$env" ]; then
+            envflag=(-e "$env")
         fi
 
         local start stop secs
