@@ -1,0 +1,81 @@
+name: verify-pool
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "trivy-sbom image carrying the threatrank binary"
+        required: true
+      target:
+        description: "meridian-holdings repo to scan"
+        default: "python--adeyosemanputra--pygoat"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: meridian-holdings/${{ inputs.target }}
+          path: target
+
+      - name: Trivy scan
+        run: |
+          curl -sfSL -o /tmp/trivy.gz \
+            https://assets.build.boostsecurity.io/scanners/trivy/trivy-0.69.2/linux/amd64/trivy.gz
+          gunzip -f /tmp/trivy.gz && chmod +x /tmp/trivy
+          cd target && /tmp/trivy fs --format=json --output=trivy-report.json \
+            --no-progress --scanners vuln --skip-version-check . >/dev/null 2>&1 || true
+
+      # Run the binary directly so each config leaves its report behind; the
+      # scanner's own wrapper analyses in a temp dir and discards it.
+      - name: Run each config and keep its report
+        run: |
+          docker pull -q "${{ inputs.image }}"
+          for spec in "baseline:" "pool2:THREATRANK_ONNX_SESSIONS=2" "pool4:THREATRANK_ONNX_SESSIONS=4"; do
+            label=${spec%%:*}; env=${spec#*:}
+            ef=(); [ -n "$env" ] && ef=(-e "$env")
+            mkdir -p "out-$label"
+            start=$(date +%s.%N)
+            docker run --rm -v "$PWD/target:/scan" -v "$PWD/out-$label:/out" -w /tmp \
+              -e THREATRANK_OUTPUT_DIR=/out "${ef[@]}" \
+              --entrypoint /opt/threatrank/threatrank "${{ inputs.image }}" \
+              run_all /scan . --no-scan --trivy-input /scan/trivy-report \
+              --format csv --cvss LOW --epss 0.00 > "log-$label.txt" 2>&1 || true
+            stop=$(date +%s.%N)
+            echo "$label: $(echo "$start $stop" | awk '{printf "%.2f", $2-$1}')s" | tee -a timings.txt
+          done
+
+      - name: Compare
+        run: |
+          python3 - <<'PY' | tee comparison.txt
+          import csv, glob, statistics
+          def load(d):
+              f = glob.glob(f"{d}/final-*.csv")
+              if not f: return None
+              return {r['cve_number']: r for r in csv.DictReader(open(f[0]))}
+          base = load("out-baseline")
+          print("baseline rows:", len(base) if base else "NO REPORT")
+          for label in ("pool2", "pool4"):
+              other = load(f"out-{label}")
+              if not base or not other:
+                  print(f"{label}: NO REPORT"); continue
+              common = set(base) & set(other)
+              cls = sum(1 for c in common
+                        if base[c]['threatrank-classification'] != other[c]['threatrank-classification'])
+              d = [abs(float(base[c]['threatrank-score'] or 0) - float(other[c]['threatrank-score'] or 0))
+                   for c in common]
+              print(f"{label}: rows {len(other)} (base {len(base)}), common {len(common)}, "
+                    f"class-differs {cls}, score max {max(d):.3f} mean {statistics.mean(d):.3f}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify
+          path: |
+            out-*/
+            log-*.txt
+            timings.txt
+            comparison.txt
