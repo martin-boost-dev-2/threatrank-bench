@@ -242,6 +242,43 @@ cpu_sweep() {
     mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
 }
 
+# ---------------------------------------------------------------------------
+# Session-pool sweep: N single-threaded sessions against one multi-threaded one.
+# Unset THREATRANK_ONNX_SESSIONS is the shipped behaviour and the baseline here.
+# ---------------------------------------------------------------------------
+pool_sweep() {
+    local cap=${WORKER_SWEEP_CVES:-100}
+    cp "$REPO_DIR/trivy-report.json" "$REPO_DIR/.trivy-full.json"
+    python3 scripts/truncate_cves.py "$REPO_DIR/.trivy-full.json" \
+        "$REPO_DIR/trivy-report.json" "$cap"
+
+    local cves; cves=$(cve_count)
+    say "  pool sweep at ${cves} CVEs on $(nproc) cores"
+
+    for n in ${POOL_SIZES:-0 2 4 8}; do
+        local envflag=()
+        local label="baseline"
+        if [ "$n" -gt 0 ]; then
+            envflag=(-e "THREATRANK_ONNX_SESSIONS=$n")
+            label="pool${n}"
+        fi
+
+        local start stop secs
+        start=$(now)
+        docker run --rm -i -v "$REPO_DIR:/scan" -w /scan \
+            -e THREATRANK_BENCHMARK=1 "${envflag[@]}" "$VARIANT_B_IMAGE" process \
+            < "$REPO_DIR/trivy-cyclonedx.json" > /dev/null 2>"$REPO_DIR/.arm.log" || true
+        stop=$(now)
+        secs=$(elapsed "$start" "$stop")
+
+        local bench; bench=$(grep -o 'seconds=[0-9.]*' "$REPO_DIR/.arm.log" | head -1 || true)
+        say "  ${label}: ${secs}s (${bench})"
+        row "$TARGET" "$label" "$cves" "$secs" "${bench:-}"
+    done
+
+    mv "$REPO_DIR/.trivy-full.json" "$REPO_DIR/trivy-report.json"
+}
+
 main() {
     say "== ${TARGET} =="
     repo_stats
@@ -263,6 +300,10 @@ main() {
 
     if [ "${RUN_CPU_SWEEP:-0}" = "1" ]; then
         cpu_sweep
+    fi
+
+    if [ "${RUN_POOL_SWEEP:-0}" = "1" ]; then
+        pool_sweep
     fi
 
     say "== ${TARGET} done =="

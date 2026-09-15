@@ -24,6 +24,9 @@ on:
       cpu_sweep:
         description: "Cap the container CPUs to see whether cores are saturated"
         default: "false"
+      pool_sweep:
+        description: "Sweep THREATRANK_ONNX_SESSIONS against the shipped baseline"
+        default: "false"
       worker_sweep_cves:
         description: "CVE count to hold fixed during the worker sweep"
         default: "100"
@@ -99,12 +102,13 @@ jobs:
           TARGET: ${{ matrix.target }}
           REPEATS: ${{ inputs.repeats }}
           VARIANT_B_IMAGE: ${{ inputs.variant_b_image }}
-          RUN_SWEEP: ${{ (inputs.worker_sweep != 'true' && inputs.cpu_sweep != 'true' && (inputs.sweep_only == 'true' || matrix.target == inputs.sweep_target)) && '1' || '0' }}
-          SWEEP_ONLY: ${{ (inputs.sweep_only == 'true' || inputs.worker_sweep == 'true' || inputs.cpu_sweep == 'true') && 'true' || 'false' }}
+          RUN_SWEEP: ${{ (inputs.worker_sweep != 'true' && inputs.cpu_sweep != 'true' && inputs.pool_sweep != 'true' && (inputs.sweep_only == 'true' || matrix.target == inputs.sweep_target)) && '1' || '0' }}
+          SWEEP_ONLY: ${{ (inputs.sweep_only == 'true' || inputs.worker_sweep == 'true' || inputs.cpu_sweep == 'true' || inputs.pool_sweep == 'true') && 'true' || 'false' }}
           SWEEP_COUNTS: ${{ inputs.sweep_counts }}
           RUN_WORKER_SWEEP: ${{ inputs.worker_sweep == 'true' && '1' || '0' }}
           WORKER_SWEEP_CVES: ${{ inputs.worker_sweep_cves }}
           RUN_CPU_SWEEP: ${{ inputs.cpu_sweep == 'true' && '1' || '0' }}
+          RUN_POOL_SWEEP: ${{ inputs.pool_sweep == 'true' && '1' || '0' }}
         run: |
           chmod +x scripts/bench.sh
           ./scripts/bench.sh > results-${{ matrix.target }}.csv
